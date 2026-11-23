@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#16131f">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
 <title>Lector de cómics</title>
 <style>
 :root{--bg:#16131f;--pn:#231f33;--ln:#3a3452;--fg:#f4efe1;--mt:#a39cc0;--ac:#ffd23f}
@@ -11,7 +14,11 @@
 html,body{height:100%;background:var(--bg);color:var(--fg);font:15px system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
 button{font:inherit;color:var(--fg);background:var(--pn);border:2px solid var(--ln);border-radius:4px;padding:7px 11px;cursor:pointer}
 button:hover{border-color:var(--ac)}
-button:focus-visible,input:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+button:focus-visible,input:focus-visible{outline:3px solid var(--ac);outline-offset:3px}
+#lib{width:min(480px,100%);display:flex;flex-direction:column;gap:8px;max-height:34vh;overflow:auto;padding:4px}
+#lib button{display:flex;justify-content:space-between;gap:12px;text-align:left;padding:12px 14px;font-size:16px}
+#lib button span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#lib button span:last-child{color:var(--mt);flex:none}
 #home{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding:24px;text-align:center;background-image:radial-gradient(#2c2742 1.3px,transparent 1.6px);background-size:14px 14px}
 h1{font:400 clamp(34px,8vw,58px)/1 Impact,Haettenschweiler,"Arial Narrow Bold",sans-serif;letter-spacing:.02em}
 #drop{width:min(480px,100%);padding:36px 22px;background:var(--pn);border:3px solid var(--fg);border-radius:4px;box-shadow:8px 8px 0 var(--ac);display:flex;flex-direction:column;gap:18px;align-items:center}
@@ -40,11 +47,12 @@ h1{font:400 clamp(34px,8vw,58px)/1 Impact,Haettenschweiler,"Arial Narrow Bold",s
 <div id="home">
   <h1>Lector de cómics</h1>
   <div id="drop">
-    <p>Arrastra aquí un archivo CBR, CBZ o PDF, o elígelo desde tu dispositivo.</p>
-    <button class="go" id="open">Elegir archivo</button>
+    <p>Elige uno o varios cómics (CBR, CBZ o PDF) desde tu memoria o dispositivo. También puedes arrastrarlos aquí.</p>
+    <button class="go" id="open" autofocus>Elegir cómics</button>
   </div>
+  <div id="lib"></div>
   <p class="note">Todo se procesa en tu dispositivo: el cómic no se sube a ningún servidor. Recuerda la última página que leíste de cada archivo.</p>
-  <input type="file" id="f" accept=".cbr,.cbz,.pdf,.zip,.rar" hidden>
+  <input type="file" id="f" multiple hidden>
 </div>
 
 <div id="rd" class="fh">
@@ -70,27 +78,45 @@ h1{font:400 clamp(34px,8vw,58px)/1 Impact,Haettenschweiler,"Arial Narrow Bold",s
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script>
-pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+const PDF_WORKER='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+async function pdfWorker(){
+  const o=pdfjsLib.GlobalWorkerOptions;
+  if((o.workerSrc||'').startsWith('blob:'))return;
+  try{o.workerSrc=URL.createObjectURL(new Blob([await(await fetch(PDF_WORKER)).text()],{type:'text/javascript'}))}
+  catch(e){o.workerSrc=PDF_WORKER}
+}
 // Soporte RAR real (CBR). Si prefieres no depender de internet, descarga estos dos archivos a tu repositorio y cambia las URLs.
 const RAR_JS='https://cdn.jsdelivr.net/npm/node-unrar-js@2.0.2/+esm';
 const RAR_WASM='https://cdn.jsdelivr.net/npm/node-unrar-js@2.0.2/esm/js/unrar.wasm';
 
 const $=s=>document.getElementById(s),rd=$('rd');
 const IMG=/\.(jpe?g|png|webp|gif|avif|bmp)$/i;
-let pages=[],cur=0,urls={},key='',mode='fh',z=1,rtl=false,tk=0;
+let lib=[],li=0,pages=[],cur=0,urls={},key='',mode='fh',z=1,rtl=false,tk=0;
 try{const c=JSON.parse(localStorage.getItem('lc:cfg')||'{}');mode=c.mode||mode;rtl=!!c.rtl}catch(e){}
 
 const save=()=>{try{localStorage.setItem('lc:cfg',JSON.stringify({mode:mode==='fz'?'fw':mode,rtl}));if(key)localStorage.setItem(key,cur)}catch(e){}};
 const msg=t=>{$('msg').style.display=t?'flex':'none';$('msg').textContent=t||''};
 const get=i=>urls[i]??=pages[i]();
 
+function mime(u){
+  const h=u.subarray(0,12);
+  if(h[0]===0xFF&&h[1]===0xD8)return 'image/jpeg';
+  if(h[0]===0x89&&h[1]===0x50)return 'image/png';
+  if(h[0]===0x47&&h[1]===0x49)return 'image/gif';
+  if(h[0]===0x52&&h[1]===0x49&&h[8]===0x57)return 'image/webp';
+  if(h[4]===0x66&&h[5]===0x74)return 'image/avif';
+  if(h[0]===0x42&&h[1]===0x4D)return 'image/bmp';
+  return null;
+}
 function fromEntries(list){
   list=list.filter(e=>IMG.test(e.name)&&!/(^|\/)(\.|__MACOSX)/.test(e.name))
     .sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true,sensitivity:'base'}));
   if(!list.length)throw Error('No encontré imágenes dentro del archivo.');
   return list.map(e=>async()=>{
+    const u=await e.get();
+    if(!(u instanceof Uint8Array)||!u.length)throw Error('la página llegó vacía');
     const ext=e.name.split('.').pop().toLowerCase().replace('jpg','jpeg');
-    return URL.createObjectURL(new Blob([await e.get()],{type:'image/'+ext}));
+    return URL.createObjectURL(new Blob([u],{type:mime(u)||'image/'+ext}));
   });
 }
 async function loadZip(buf){
@@ -102,11 +128,16 @@ async function loadRar(u8){
   const ex=await createExtractorFromData({wasmBinary,data:u8});
   const out=[];
   for(const f of ex.extract().files){
-    if(!f.fileHeader.flags.directory&&IMG.test(f.fileHeader.name))out.push({name:f.fileHeader.name,get:()=>f.extraction.data});
+    if(f.fileHeader.flags.directory||!IMG.test(f.fileHeader.name))continue;
+    const x=f.extraction,d=x instanceof Uint8Array?x:x&&x.data;
+    if(d instanceof Uint8Array&&d.length)out.push({name:f.fileHeader.name,get:()=>d});
   }
+  if(!out.length)throw Error('no se pudieron extraer imágenes del CBR.');
+  if(!mime(out[0].get()))throw Error('la primera página extraída no es una imagen válida ('+out[0].get().length+' bytes).');
   return fromEntries(out);
 }
 async function loadPDF(u8){
+  await pdfWorker();
   const pdf=await pdfjsLib.getDocument({data:u8}).promise;
   return Array.from({length:pdf.numPages},(_,i)=>async()=>{
     const p=await pdf.getPage(i+1),b=p.getViewport({scale:1});
@@ -117,6 +148,20 @@ async function loadPDF(u8){
   });
 }
 
+function showLib(){
+  const L=$('lib');L.innerHTML='';
+  lib.forEach((f,i)=>{
+    const b=document.createElement('button');b.innerHTML='<span></span><span></span>';
+    b.firstChild.textContent=f.name;b.lastChild.textContent=(f.size/1048576).toFixed(1)+' MB';
+    b.onclick=()=>{li=i;openFile(f)};L.appendChild(b);
+  });
+}
+function addFiles(fs){
+  fs=[...fs].sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true,sensitivity:'base'}));
+  if(!fs.length)return;
+  lib=fs;li=0;showLib();
+  if(fs.length===1)openFile(fs[0]);else $('lib').firstChild.focus();
+}
 function reset(){for(const j in urls)urls[j].then(URL.revokeObjectURL);urls={};pages=[]}
 
 async function openFile(f){
@@ -134,6 +179,7 @@ async function openFile(f){
     key='lc:'+f.name+':'+f.size;$('ttl').textContent=f.name;
     let s=0;try{s=+localStorage.getItem(key)||0}catch(e){}
     $('home').style.display='none';rd.style.display='flex';rd.classList.remove('nb');
+    try{navigator.wakeLock&&navigator.wakeLock.request('screen').catch(()=>{})}catch(e){}
     $('pg').max=pages.length;upd();msg('');
     go(Math.min(s,pages.length-1));
   }catch(e){msg('');alert('No se pudo abrir el archivo: '+e.message)}
@@ -158,6 +204,7 @@ function step(d){
     if(d>0&&s.scrollTop<m-4)return s.scrollBy(0,s.clientHeight*.9);
     if(d<0&&s.scrollTop>4)return s.scrollBy(0,-s.clientHeight*.9);
   }
+  if(d>0&&cur===pages.length-1&&li<lib.length-1){openFile(lib[++li]);return}
   go(cur+d);
 }
 
@@ -169,8 +216,9 @@ function upd(){
 }
 
 $('open').onclick=()=>$('f').click();
-$('f').onchange=e=>openFile(e.target.files[0]);
-$('x').onclick=()=>{rd.style.display='none';$('home').style.display='flex';$('f').value='';$('im').removeAttribute('src');reset();key=''};
+$('im').onerror=()=>{$('cnt').textContent='⚠ imagen no válida'};
+$('f').onchange=e=>addFiles(e.target.files);
+$('x').onclick=()=>{rd.style.display='none';$('home').style.display='flex';$('f').value='';$('im').removeAttribute('src');reset();key='';($('lib').children[li]||$('open')).focus()};
 $('fit').onclick=()=>{mode=mode==='fh'?'fw':'fh';z=1;upd()};
 $('zi').onclick=()=>{z=Math.min(4,mode==='fz'?z*1.25:1.25);mode='fz';upd()};
 $('zo').onclick=()=>{z=mode==='fz'?z/1.25:1/1.25;if(z<=1.01){z=1;mode='fh'}else mode='fz';upd()};
@@ -207,12 +255,17 @@ addEventListener('keydown',e=>{
   else if(k==='+'||k==='=')$('zi').click();
   else if(k==='-')$('zo').click();
   else if(k==='f')$('fs').click();
+  else if(k==='ArrowDown')mode==='fh'?step(1):$('st').scrollBy(0,90);
+  else if(k==='ArrowUp')mode==='fh'?step(-1):$('st').scrollBy(0,-90);
+  else if(k==='Enter')rd.classList.toggle('nb');
+  else if(k==='Escape'&&!document.fullscreenElement)$('x').click();
 });
 
 const dz=$('drop');
 ['dragover','dragenter'].forEach(n=>addEventListener(n,e=>{e.preventDefault();dz.classList.add('on')}));
 ['dragleave','drop'].forEach(n=>addEventListener(n,e=>{e.preventDefault();dz.classList.remove('on')}));
-addEventListener('drop',e=>openFile(e.dataTransfer.files[0]));
+addEventListener('drop',e=>addFiles(e.dataTransfer.files));
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
 </script>
 </body>
 </html>
