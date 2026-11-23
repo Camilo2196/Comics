@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#16131f">
+<title>Lector de cómics</title>
+<style>
+:root{--bg:#16131f;--pn:#231f33;--ln:#3a3452;--fg:#f4efe1;--mt:#a39cc0;--ac:#ffd23f}
+*{box-sizing:border-box;margin:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;background:var(--bg);color:var(--fg);font:15px system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
+button{font:inherit;color:var(--fg);background:var(--pn);border:2px solid var(--ln);border-radius:4px;padding:7px 11px;cursor:pointer}
+button:hover{border-color:var(--ac)}
+button:focus-visible,input:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+#home{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding:24px;text-align:center;background-image:radial-gradient(#2c2742 1.3px,transparent 1.6px);background-size:14px 14px}
+h1{font:400 clamp(34px,8vw,58px)/1 Impact,Haettenschweiler,"Arial Narrow Bold",sans-serif;letter-spacing:.02em}
+#drop{width:min(480px,100%);padding:36px 22px;background:var(--pn);border:3px solid var(--fg);border-radius:4px;box-shadow:8px 8px 0 var(--ac);display:flex;flex-direction:column;gap:18px;align-items:center}
+#drop.on{transform:translate(4px,4px);box-shadow:4px 4px 0 var(--ac)}
+#drop p{color:var(--mt);line-height:1.5}
+.go{background:var(--ac);color:#16131f;border:3px solid var(--fg);font-weight:700;font-size:17px;padding:12px 24px}
+.go:hover{border-color:var(--fg);background:#fff}
+.note{color:var(--mt);font-size:13px;max-width:420px;line-height:1.5}
+#rd{display:none;height:100%;flex-direction:column}
+.bar{display:flex;align-items:center;gap:6px;padding:8px 10px;padding-top:max(8px,env(safe-area-inset-top));background:var(--pn);border-bottom:2px solid var(--ln)}
+.bar.b{border:0;border-top:2px solid var(--ln);padding-top:8px;padding-bottom:max(8px,env(safe-area-inset-bottom))}
+#ttl{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--mt);padding:0 4px}
+#st{flex:1;min-height:0;display:flex;overflow:auto;background:#0d0b14}
+#st img{flex:none;margin:auto;user-select:none;-webkit-user-drag:none}
+.fh #st{overflow:hidden}
+.fh #st img{width:100%;height:100%;object-fit:contain}
+.fw #st img{width:100%;height:auto}
+.fz #st img{width:calc(var(--z)*100%);height:auto}
+.nb .bar{display:none}
+#pg{flex:1;accent-color:var(--ac);min-width:0}
+#cnt{min-width:74px;text-align:center;color:var(--mt);font-variant-numeric:tabular-nums}
+#msg{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:#16131fee;z-index:9;padding:24px;text-align:center;font-size:17px}
+</style>
+</head>
+<body>
+<div id="home">
+  <h1>Lector de cómics</h1>
+  <div id="drop">
+    <p>Arrastra aquí un archivo CBR, CBZ o PDF, o elígelo desde tu dispositivo.</p>
+    <button class="go" id="open">Elegir archivo</button>
+  </div>
+  <p class="note">Todo se procesa en tu dispositivo: el cómic no se sube a ningún servidor. Recuerda la última página que leíste de cada archivo.</p>
+  <input type="file" id="f" accept=".cbr,.cbz,.pdf,.zip,.rar" hidden>
+</div>
+
+<div id="rd" class="fh">
+  <div class="bar">
+    <button id="x" aria-label="Cerrar cómic" title="Cerrar">✕</button>
+    <span id="ttl"></span>
+    <button id="fit" title="Ajustar al alto o al ancho">Alto</button>
+    <button id="zo" aria-label="Alejar" title="Alejar">−</button>
+    <button id="zi" aria-label="Acercar" title="Acercar">+</button>
+    <button id="rt" title="Dirección de lectura (RTL = manga)">LTR</button>
+    <button id="fs" aria-label="Pantalla completa" title="Pantalla completa">⛶</button>
+  </div>
+  <div id="st"><img id="im" alt="Página del cómic"></div>
+  <div class="bar b">
+    <button id="pv" aria-label="Página anterior">◀</button>
+    <input type="range" id="pg" min="1" value="1" aria-label="Página">
+    <button id="nx" aria-label="Página siguiente">▶</button>
+    <span id="cnt"></span>
+  </div>
+</div>
+<div id="msg"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+// Soporte RAR real (CBR). Si prefieres no depender de internet, descarga estos dos archivos a tu repositorio y cambia las URLs.
+const RAR_JS='https://cdn.jsdelivr.net/npm/node-unrar-js@2.0.2/+esm';
+const RAR_WASM='https://cdn.jsdelivr.net/npm/node-unrar-js@2.0.2/esm/js/unrar.wasm';
+
+const $=s=>document.getElementById(s),rd=$('rd');
+const IMG=/\.(jpe?g|png|webp|gif|avif|bmp)$/i;
+let pages=[],cur=0,urls={},key='',mode='fh',z=1,rtl=false,tk=0;
+try{const c=JSON.parse(localStorage.getItem('lc:cfg')||'{}');mode=c.mode||mode;rtl=!!c.rtl}catch(e){}
+
+const save=()=>{try{localStorage.setItem('lc:cfg',JSON.stringify({mode:mode==='fz'?'fw':mode,rtl}));if(key)localStorage.setItem(key,cur)}catch(e){}};
+const msg=t=>{$('msg').style.display=t?'flex':'none';$('msg').textContent=t||''};
+const get=i=>urls[i]??=pages[i]();
+
+function fromEntries(list){
+  list=list.filter(e=>IMG.test(e.name)&&!/(^|\/)(\.|__MACOSX)/.test(e.name))
+    .sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true,sensitivity:'base'}));
+  if(!list.length)throw Error('No encontré imágenes dentro del archivo.');
+  return list.map(e=>async()=>{
+    const ext=e.name.split('.').pop().toLowerCase().replace('jpg','jpeg');
+    return URL.createObjectURL(new Blob([await e.get()],{type:'image/'+ext}));
+  });
+}
+async function loadZip(buf){
+  const zip=await JSZip.loadAsync(buf);
+  return fromEntries(Object.values(zip.files).filter(f=>!f.dir).map(f=>({name:f.name,get:()=>f.async('uint8array')})));
+}
+async function loadRar(u8){
+  const [{createExtractorFromData},wasmBinary]=await Promise.all([import(RAR_JS),fetch(RAR_WASM).then(r=>r.arrayBuffer())]);
+  const ex=await createExtractorFromData({wasmBinary,data:u8});
+  const out=[];
+  for(const f of ex.extract().files){
+    if(!f.fileHeader.flags.directory&&IMG.test(f.fileHeader.name))out.push({name:f.fileHeader.name,get:()=>f.extraction.data});
+  }
+  return fromEntries(out);
+}
+async function loadPDF(u8){
+  const pdf=await pdfjsLib.getDocument({data:u8}).promise;
+  return Array.from({length:pdf.numPages},(_,i)=>async()=>{
+    const p=await pdf.getPage(i+1),b=p.getViewport({scale:1});
+    const v=p.getViewport({scale:Math.min(2.5,2200/Math.max(b.width,b.height))});
+    const c=document.createElement('canvas');c.width=v.width;c.height=v.height;
+    await p.render({canvasContext:c.getContext('2d'),viewport:v,background:'#fff'}).promise;
+    return new Promise(r=>c.toBlob(bl=>r(URL.createObjectURL(bl)),'image/jpeg',.9));
+  });
+}
+
+function reset(){for(const j in urls)urls[j].then(URL.revokeObjectURL);urls={};pages=[]}
+
+async function openFile(f){
+  if(!f)return;
+  msg('Abriendo '+f.name+'…');
+  try{
+    const buf=await f.arrayBuffer(),u8=new Uint8Array(buf);
+    const h=new TextDecoder('latin1').decode(u8.subarray(0,1024));
+    let p;
+    if(h.includes('%PDF'))p=await loadPDF(u8);
+    else if(h.startsWith('PK'))p=await loadZip(buf);
+    else if(h.startsWith('Rar!'))p=await loadRar(u8);
+    else throw Error('Formato no reconocido. Usa un archivo CBR, CBZ o PDF.');
+    reset();pages=p;
+    key='lc:'+f.name+':'+f.size;$('ttl').textContent=f.name;
+    let s=0;try{s=+localStorage.getItem(key)||0}catch(e){}
+    $('home').style.display='none';rd.style.display='flex';rd.classList.remove('nb');
+    $('pg').max=pages.length;upd();msg('');
+    go(Math.min(s,pages.length-1));
+  }catch(e){msg('');alert('No se pudo abrir el archivo: '+e.message)}
+}
+
+async function go(i){
+  if(i<0||i>=pages.length)return;
+  cur=i;const t=++tk;
+  $('pg').value=i+1;$('cnt').textContent=(i+1)+' / '+pages.length;
+  try{
+    const u=await get(i);if(t!==tk)return;
+    $('im').src=u;$('st').scrollTo(0,0);save();
+    [i+1,i+2,i-1].forEach(j=>pages[j]&&get(j));
+    for(const j in urls)if(Math.abs(j-i)>4){urls[j].then(URL.revokeObjectURL);delete urls[j]}
+  }catch(e){msg('');alert('No se pudo mostrar la página '+(i+1)+'.')}
+}
+
+function step(d){
+  const s=$('st');
+  if(mode!=='fh'){
+    const m=s.scrollHeight-s.clientHeight;
+    if(d>0&&s.scrollTop<m-4)return s.scrollBy(0,s.clientHeight*.9);
+    if(d<0&&s.scrollTop>4)return s.scrollBy(0,-s.clientHeight*.9);
+  }
+  go(cur+d);
+}
+
+function upd(){
+  rd.classList.remove('fh','fw','fz');rd.classList.add(mode);rd.style.setProperty('--z',z);
+  $('fit').textContent=mode==='fz'?Math.round(z*100)+'%':mode==='fh'?'Alto':'Ancho';
+  $('rt').textContent=rtl?'RTL':'LTR';$('pg').style.direction=rtl?'rtl':'ltr';
+  save();
+}
+
+$('open').onclick=()=>$('f').click();
+$('f').onchange=e=>openFile(e.target.files[0]);
+$('x').onclick=()=>{rd.style.display='none';$('home').style.display='flex';$('f').value='';$('im').removeAttribute('src');reset();key=''};
+$('fit').onclick=()=>{mode=mode==='fh'?'fw':'fh';z=1;upd()};
+$('zi').onclick=()=>{z=Math.min(4,mode==='fz'?z*1.25:1.25);mode='fz';upd()};
+$('zo').onclick=()=>{z=mode==='fz'?z/1.25:1/1.25;if(z<=1.01){z=1;mode='fh'}else mode='fz';upd()};
+$('rt').onclick=()=>{rtl=!rtl;upd()};
+$('pv').onclick=()=>step(rtl?1:-1);
+$('nx').onclick=()=>step(rtl?-1:1);
+$('pg').oninput=e=>go(+e.target.value-1);
+$('pg').onchange=e=>e.target.blur();
+if(document.fullscreenEnabled)$('fs').onclick=()=>document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen();
+else $('fs').style.display='none';
+
+$('st').onclick=e=>{
+  const r=e.currentTarget.getBoundingClientRect(),x=(e.clientX-r.left)/r.width;
+  if(mode==='fz'||(x>=.3&&x<=.7))rd.classList.toggle('nb');
+  else step((x<.3)===!rtl?-1:1);
+};
+let sx,sy;
+$('st').addEventListener('touchstart',e=>{sx=e.touches[0].clientX;sy=e.touches[0].clientY},{passive:true});
+$('st').addEventListener('touchend',e=>{
+  const t=e.changedTouches[0],dx=t.clientX-sx,dy=t.clientY-sy;
+  if(mode!=='fz'&&Math.abs(dx)>60&&Math.abs(dx)>2*Math.abs(dy))step((dx<0)===!rtl?1:-1);
+},{passive:true});
+
+addEventListener('keydown',e=>{
+  if(rd.style.display!=='flex')return;
+  document.activeElement&&document.activeElement.blur();
+  const k=e.key,r=rtl?-1:1;
+  if(k==='ArrowRight')step(r);
+  else if(k==='ArrowLeft')step(-r);
+  else if(k===' '||k==='PageDown'){e.preventDefault();step(1)}
+  else if(k==='PageUp')step(-1);
+  else if(k==='Home')go(0);
+  else if(k==='End')go(pages.length-1);
+  else if(k==='+'||k==='=')$('zi').click();
+  else if(k==='-')$('zo').click();
+  else if(k==='f')$('fs').click();
+});
+
+const dz=$('drop');
+['dragover','dragenter'].forEach(n=>addEventListener(n,e=>{e.preventDefault();dz.classList.add('on')}));
+['dragleave','drop'].forEach(n=>addEventListener(n,e=>{e.preventDefault();dz.classList.remove('on')}));
+addEventListener('drop',e=>openFile(e.dataTransfer.files[0]));
+</script>
+</body>
+</html>
